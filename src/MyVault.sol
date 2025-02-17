@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin-contracts/interfaces/IERC20.sol";
+import "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin-contracts/utils/math/Math.sol";
 
-import { IWETH } from "src/interface/IWETH.sol";
+import { IWETH } from "src/interfaces/IWETH.sol";
+import { ILido } from "src/interfaces/ILido.sol";
+import { IWithdrawalQueueERC721 } from "src/interfaces/IWithdrawalQueueERC721.sol";
 
 contract MyVault is
     ERC4626Upgradeable,
@@ -17,8 +19,8 @@ contract MyVault is
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
-    using MathUpgradeable for uint256;
+    using SafeERC20 for IERC20;
+    using Math for uint256;
 
     // Immutable WETH address
     address public immutable weth;
@@ -34,6 +36,10 @@ contract MyVault is
     // Fee in basis points (e.g., 100 = 1%)
     uint256 public feeBasisPoints;
 
+    // Events
+    event WithdrawalRequested(address indexed user, uint256[] requestIds);
+    event ETHClaimed(address indexed user, uint256 amount, uint256 requestId);
+
     // Custom errors
     error InvalidAddress();
     error InvalidFee();
@@ -48,7 +54,7 @@ contract MyVault is
 
     /// @notice Initializes the contract after deployment
     /// @param _admin The admin address for AccessControl
-    /// @param _lidoStakingContract The address of the LIDO staking contract
+    /// @param _lido The address of the LIDO staking contract
     /// @param _feeBasisPoints The fee in basis points (e.g., 100 = 1%)
     function initialize(
         address _admin,
@@ -61,7 +67,7 @@ contract MyVault is
         if (_withdrawalQueue == address(0)) revert InvalidAddress();
         if (_feeBasisPoints > 10000) revert InvalidFee(); // Fee cannot exceed 100%
 
-        __ERC4626_init(IERC20Upgradeable(weth)); // Initialize ERC4626 with WETH as the underlying asset
+        __ERC4626_init(IERC20(weth)); // Initialize ERC4626 with WETH as the underlying asset
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
@@ -81,7 +87,7 @@ contract MyVault is
         IWETH(weth).transferFrom(msg.sender, address(this), amount); // Transfer WETH to this contract
         IWETH(weth).withdraw(amount); // Convert WETH to ETH
 
-        uint256 stETHReceived = lido.submit(address(0)){ value: amount };
+        uint256 stETHReceived = lido.submit{ value: amount}(address(0));
         return stETHReceived;
     }
 
@@ -90,7 +96,7 @@ contract MyVault is
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = amount;
 
-        uint256 memory requestIds = withdrawalQueue.requestWithdrawals(amounts, msg.sender);
+        uint256[] memory requestIds = withdrawalQueue.requestWithdrawals(amounts, msg.sender);
         emit WithdrawalRequested(msg.sender, requestIds);
 
         withdrawalQueue.claimWithdrawal(requestIds[0]);
@@ -102,7 +108,7 @@ contract MyVault is
         require(assets > 0, "Invalid amount");
 
         // Transfer WETH from the caller to this contract
-        IERC20Upgradeable(weth).safeTransferFrom(msg.sender, address(this), assets);
+        IERC20(weth).safeTransferFrom(msg.sender, address(this), assets);
 
         // Stake WETH
         _stakeWETH(assets);
@@ -136,7 +142,7 @@ contract MyVault is
         uint256 amountAfterFee = assets - fee;
 
         // Transfer WETH to the receiver
-        IERC20Upgradeable(weth).safeTransfer(receiver, amountAfterFee);
+        IERC20(weth).safeTransfer(receiver, amountAfterFee);
 
         return amountAfterFee;
     }
@@ -144,7 +150,7 @@ contract MyVault is
     /// @notice Override ERC4626 previewRedeem to account for staking rewards
     function previewRedeem(uint256 shares) public view override returns (uint256) {
         // Calculate total assets including staking rewards
-        uint256 totalAssets = IERC20Upgradeable(weth).balanceOf(address(this)) + address(this).balance;
+        uint256 totalAssets = IERC20(weth).balanceOf(address(this)) + address(this).balance;
         return (shares * totalAssets) / totalSupply();
     }
 
