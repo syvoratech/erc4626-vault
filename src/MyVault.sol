@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin-contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin-contracts/interfaces/IERC20.sol";
+import "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin-contracts/utils/math/Math.sol";
 
-import { IWETH } from "src/interface/IWETH.sol";
+import { IWETH } from "src/interfaces/IWETH.sol";
+import { ILido } from "src/interfaces/ILido.sol";
+import { IWithdrawalQueueERC721 } from "src/interfaces/IWithdrawalQueueERC721.sol";
 
 contract MyVault is
     ERC4626Upgradeable,
@@ -17,8 +19,8 @@ contract MyVault is
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
-    using MathUpgradeable for uint256;
+    using SafeERC20 for IERC20;
+    using Math for uint256;
 
     // Immutable WETH address
     address public immutable weth;
@@ -27,11 +29,16 @@ contract MyVault is
     bytes32 public constant VAULT_ADMIN = keccak256("VAULT_ADMIN");
     bytes32 public constant FEE_MANAGER = keccak256("FEE_MANAGER");
 
-    // LIDO staking contract address
-    address public lidoStakingContract;
+    // LIDO staking & withdrawal contracts
+    ILido public lido;
+    IWithdrawalQueueERC721 public withdrawalQueue;
 
     // Fee in basis points (e.g., 100 = 1%)
     uint256 public feeBasisPoints;
+
+    // Events
+    event WithdrawalRequested(address indexed user, uint256[] requestIds);
+    event ETHClaimed(address indexed user, uint256 amount, uint256 requestId);
 
     // Custom errors
     error InvalidAddress();
@@ -47,18 +54,20 @@ contract MyVault is
 
     /// @notice Initializes the contract after deployment
     /// @param _admin The admin address for AccessControl
-    /// @param _lidoStakingContract The address of the LIDO staking contract
+    /// @param _lido The address of the LIDO staking contract
     /// @param _feeBasisPoints The fee in basis points (e.g., 100 = 1%)
     function initialize(
         address _admin,
-        address _lidoStakingContract,
+        address _lido,
+        address _withdrawalQueue,
         uint256 _feeBasisPoints
     ) external initializer {
         if (_admin == address(0)) revert InvalidAddress();
-        if (_lidoStakingContract == address(0)) revert InvalidAddress();
+        if (_lido == address(0)) revert InvalidAddress();
+        if (_withdrawalQueue == address(0)) revert InvalidAddress();
         if (_feeBasisPoints > 10000) revert InvalidFee(); // Fee cannot exceed 100%
 
-        __ERC4626_init(IERC20Upgradeable(weth)); // Initialize ERC4626 with WETH as the underlying asset
+        __ERC4626_init(IERC20(weth)); // Initialize ERC4626 with WETH as the underlying asset
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
@@ -68,34 +77,80 @@ contract MyVault is
         _grantRole(VAULT_ADMIN, _admin);
         _grantRole(FEE_MANAGER, _admin);
 
-        lidoStakingContract = _lidoStakingContract;
+        lido = ILido(_lido);
+        withdrawalQueue = IWithdrawalQueueERC721(_withdrawalQueue);
         feeBasisPoints = _feeBasisPoints;
     }
 
-    /// @notice Converts WETH to ETH and stakes it on LIDO (internal)
-    function _stakeWETH(uint256 amount) internal nonReentrant {
-        // Convert WETH to ETH
-        IWETH(weth).withdraw(amount);
+    /// @notice Converts WETH to ETH and stakes it on LIDO (internal)    
+    function _stakeWETH(uint256 amount) internal nonReentrant returns (uint256) {
+        IWETH(weth).transferFrom(msg.sender, address(this), amount); // Transfer WETH to this contract
+        IWETH(weth).withdraw(amount); // Convert WETH to ETH
 
-        // Stake ETH on LIDO (replace with actual LIDO staking logic)
-        (bool success, ) = lidoStakingContract.call{value: amount}("");
-        require(success, "Staking failed");
+        uint256 stETHReceived = lido.submit{ value: amount}(address(0));
+        return stETHReceived;
     }
 
     /// @notice Withdraws ETH from LIDO and converts it back to WETH (internal)
     function _unstakeETH(uint256 amount) internal nonReentrant {
-        // Withdraw ETH from LIDO (replace with actual LIDO unstaking logic)
-        (bool success, ) = lidoStakingContract.call(abi.encodeWithSignature("withdraw(uint256)", amount));
-        require(success, "Unstaking failed");
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = amount;
 
-        // Convert ETH to WETH
-        IWETH(weth).deposit{value: amount}();
+        uint256[] memory requestIds = withdrawalQueue.requestWithdrawals(amounts, msg.sender);
+        emit WithdrawalRequested(msg.sender, requestIds);
+
+        withdrawalQueue.claimWithdrawal(requestIds[0]);
+        emit ETHClaimed(msg.sender, amount, requestIds[0]);
+    }
+
+    /// @notice Override ERC4626 deposit to stake WETH automatically
+    function deposit(uint256 assets, address receiver) public override returns (uint256) {
+        require(assets > 0, "Invalid amount");
+
+        // Transfer WETH from the caller to this contract
+        IERC20(weth).safeTransferFrom(msg.sender, address(this), assets);
+
+        // Stake WETH
+        _stakeWETH(assets);
+
+        // Mint shares to the receiver
+        return super.deposit(assets, receiver);
+    }
+
+    /// @notice Override ERC4626 redeem to unstake ETH and deduct fees
+    function redeem(
+        uint256 shares,
+        address receiver,
+        address owner
+    ) public override nonReentrant returns (uint256) {
+        require(shares > 0, "Invalid shares");
+
+        // Calculate the amount of WETH to withdraw based on shares
+        uint256 assets = previewRedeem(shares);
+
+        // Burn shares from the owner
+        if (msg.sender != owner) {
+            _spendAllowance(owner, msg.sender, shares);
+        }
+        _burn(owner, shares);
+
+        // Unstake ETH from LIDO
+        _unstakeETH(assets);
+
+        // Deduct fees from the profit
+        uint256 fee = (assets * feeBasisPoints) / 10000;
+        uint256 amountAfterFee = assets - fee;
+
+        // Transfer WETH to the receiver
+        IERC20(weth).safeTransfer(receiver, amountAfterFee);
+
+        return amountAfterFee;
     }
 
     /// @notice Override ERC4626 previewRedeem to account for staking rewards
     function previewRedeem(uint256 shares) public view override returns (uint256) {
         // Calculate total assets including staking rewards
-        uint256 totalAssets = IERC20Upgradeable(weth).balanceOf(address(this)) + address(this).balance;
+        uint256 totalAssets = IERC20(weth).balanceOf(address(this)) + address(this).balance;
         return (shares * totalAssets) / totalSupply();
     }
 
