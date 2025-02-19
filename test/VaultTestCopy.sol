@@ -87,6 +87,16 @@ contract MyVaultTest is Test {
         );
     }
 
+    // function test_Redeem() public {
+    //     test_Deposit();
+    //     uint256 shares = vault.balanceOf(user);
+
+    //     vm.startPrank(user);
+    //     vm.expectRevert("ERC20: transfer amount exceeds balance");
+    //     vault.redeem(shares, user, user);
+    //     vm.stopPrank();
+    // }
+
     function test_SetFee() public {
         vm.prank(feeManager);
         vault.setFeeBasisPoints(200);
@@ -146,6 +156,31 @@ contract MyVaultTest is Test {
         vault.grantRole(adminRole, newAdmin);
     }
 
+    // function test_FeeDeduction() public {
+    //     // Setup initial deposit
+    //     test_Deposit();
+    //     uint256 shares = vault.balanceOf(user);
+
+    //     // Set 10% fee
+    //     vm.prank(feeManager);
+    //     vault.setFeeBasisPoints(1000);
+
+    //     vm.prank(user);
+    //     uint256 received = vault.redeem(shares, user, user);
+
+    //     uint256 expectedFee = (DEPOSIT_AMOUNT * 1000) / 10000;
+    //     assertEq(
+    //         received,
+    //         DEPOSIT_AMOUNT - expectedFee,
+    //         "Fee not deducted correctly"
+    //     );
+    //     assertEq(
+    //         weth.balanceOf(address(vault)),
+    //         expectedFee,
+    //         "Fee not retained in vault"
+    //     );
+    // }
+
     function test_RevertMaxUintDeposit() public {
         uint256 maxAmount = type(uint256).max;
         deal(address(weth), user, maxAmount);
@@ -157,6 +192,27 @@ contract MyVaultTest is Test {
         vault.deposit(maxAmount, user);
         vm.stopPrank();
     }
+
+    // function test_FullWithdrawalFlow() public {
+    //     test_Deposit();
+    //     uint256 shares = vault.balanceOf(user);
+
+    //     // Simulate Lido withdrawal finalization
+    //     uint256 requestId = 123;
+    //     vm.mockCall(
+    //         address(withdrawalQueue),
+    //         abi.encodeWithSelector(
+    //             IWithdrawalQueueERC721.claimWithdrawal.selector
+    //         ),
+    //         abi.encode()
+    //     );
+
+    //     vm.prank(user);
+    //     vault.redeem(shares, user, user);
+
+    //     // Verify ETH conversion back to WETH
+    //     assertGt(weth.balanceOf(user), 0, "Withdrawal conversion failed");
+    // }
 
     function test_AssetConversionRates() public {
         test_Deposit();
