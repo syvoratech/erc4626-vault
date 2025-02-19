@@ -17,15 +17,15 @@ contract MyVaultTest is Test {
     ILido public lido;
     IWithdrawalQueueERC721 public withdrawalQueue;
 
-    uint256 public sepoliaFork;
+    uint256 public fork;
     uint256 public constant DEPOSIT_AMOUNT = 1e18;
 
     function setUp() public {
         // Create a fork and select it.
-        string memory sepoliaUrl = vm.envString("SEPOLIA_RPC_URL");
+        string memory sepoliaUrl = vm.envString("RPC_URL");
         uint256 blockNumber = vm.envUint("BLOCK_NUMBER");
-        sepoliaFork = vm.createFork(sepoliaUrl, blockNumber);
-        vm.selectFork(sepoliaFork);
+        fork = vm.createFork(sepoliaUrl, blockNumber);
+        vm.selectFork(fork);
 
         // Get environment addresses.
         address wethAddress = vm.envAddress("WETH_ADDRESS");
